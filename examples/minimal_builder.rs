@@ -25,14 +25,14 @@ use linux_libc_auxv::{AuxVar, StackLayoutBuilder, StackLayoutRef};
 
 /// Minimal example building a stack layout and parsing it.
 fn main() {
-    let builder = StackLayoutBuilder::new()
-        // can contain terminating zero; not mandatory in the builder
-        .add_argv("foo")
-        .add_argv("hello")
-        .add_envv("PATH=/bin")
-        .add_auxv(AuxVar::ExecFn("/usr/bin/foo".into()));
+    let mut builder = StackLayoutBuilder::new();
+    // can contain terminating zero; not mandatory in the builder
+    builder.add_argv("foo");
+    builder.add_argv("hello");
+    builder.add_envv("PATH=/bin");
+    builder.add_auxv(AuxVar::ExecFn("/usr/bin/foo".into()));
 
-    let layout = builder.build(None /* we create the layout in our address space */);
+    let layout = builder.build();
     let layout = StackLayoutRef::new(layout.as_ref(), None);
 
     // SAFETY: This is safe as all pointers point into our address space.

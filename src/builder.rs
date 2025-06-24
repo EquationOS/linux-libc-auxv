@@ -54,7 +54,7 @@ impl<'a> StackLayoutBuilder<'a> {
     ///
     /// Adding a terminating NUL byte is not necessary. Interim NUL bytes are
     /// prohibited.
-    pub fn add_argv(mut self, arg: impl Into<String>) -> Self {
+    pub fn add_argv(&mut self, arg: impl Into<String>) {
         let mut arg = arg.into();
         if let Some(pos) = arg.find('\0') {
             assert_eq!(
@@ -69,7 +69,6 @@ impl<'a> StackLayoutBuilder<'a> {
         }
 
         self.argv.push(arg);
-        self
     }
 
     /// Adds an environment-variable to the builder.
@@ -79,7 +78,7 @@ impl<'a> StackLayoutBuilder<'a> {
     ///
     /// The value must follow the `key=value` syntax, where `value` may be
     /// empty.
-    pub fn add_envv(mut self, env: impl Into<String>) -> Self {
+    pub fn add_envv(&mut self, env: impl Into<String>) {
         let mut env = env.into();
         if let Some(pos) = env.find('\0') {
             assert_eq!(
@@ -101,17 +100,14 @@ impl<'a> StackLayoutBuilder<'a> {
             assert!(!key.is_empty());
         }
         self.envv.push(env);
-        self
     }
 
     /// Adds an [`AuxVar`] to the builder.
-    #[must_use]
-    pub fn add_auxv(mut self, aux: AuxVar<'a>) -> Self {
+    pub fn add_auxv(&mut self, aux: AuxVar<'a>) {
         // Ignore, we do this automatically in the end.
         if aux != AuxVar::Null {
             self.auxv.push(aux);
         }
-        self
     }
 
     /// Returns the size in bytes needed for the `argv` entries.
@@ -198,13 +194,8 @@ impl<'a> StackLayoutBuilder<'a> {
     }
 
     /// Builds the layout with heap-allocated memory.
-    ///
-    /// # Arguments
-    /// - `target_addr`: The address the stack layout in the target address space.
-    ///   This may be a user-space address of another process. If this is
-    ///   `None` then the address of the buffer will be used.
     #[must_use]
-    pub fn build(mut self, target_addr: Option<usize>) -> ABox<[u8]> {
+    pub fn build(mut self) -> ABox<[u8]> {
         if Some(&AuxVar::Null) != self.auxv.last() {
             self.auxv.push(AuxVar::Null);
         }
@@ -220,13 +211,8 @@ impl<'a> StackLayoutBuilder<'a> {
             vec.into_boxed_slice()
         };
 
-        // If this is None, this will cause that the process creating this
-        // can also parse the structure entirely without memory issues.
-        let target_addr = target_addr.unwrap_or(buffer.as_ptr() as usize);
-
         let mut serializer = StackLayoutSerializer::new(
             &mut buffer,
-            target_addr,
             self.calc_len_argv_entries(),
             self.calc_len_envv_entries(),
             self.calc_len_auxv_entries(),
@@ -254,6 +240,66 @@ impl<'a> StackLayoutBuilder<'a> {
 
         buffer
     }
+
+    /// Builds the layout on pre-allocated stack memory.
+    ///
+    /// # Arguments
+    /// - `stack_top`: The top of the stack where the layout should be built.
+    ///
+    /// # Returns
+    /// A tuple containing the base address of the current stack frame and the
+    /// total size in bytes of the stack layout.
+    ///
+    #[must_use]
+    pub fn build_on_stack(mut self, stack_top: usize) -> (usize, usize) {
+        if Some(&AuxVar::Null) != self.auxv.last() {
+            self.auxv.push(AuxVar::Null);
+        }
+
+        let len = self.calc_total_len();
+
+        let (mut buffer, stack_base) = {
+            // If a target address is given, we allocate the buffer with
+            // the given alignment.
+            let stack_base = (stack_top - len) & !(align_of::<usize>() - 1);
+            let stack_range = unsafe {
+                // Zeroed the buffer.
+                core::ptr::write_bytes(stack_base as *mut u8, 0, len);
+                core::slice::from_raw_parts_mut(stack_base as *mut u8, len)
+            };
+            (stack_range, stack_base)
+        };
+
+        let mut serializer = StackLayoutSerializer::new(
+            &mut buffer,
+            self.calc_len_argv_entries(),
+            self.calc_len_envv_entries(),
+            self.calc_len_auxv_entries(),
+            self.calc_len_argv_data(),
+            self.calc_len_envv_data(),
+            self.calc_len_auxv_data(),
+        );
+
+        serializer.write_argc(self.argv.len());
+
+        for arg in self.argv {
+            let c_str = CStr::from_bytes_until_nul(arg.as_bytes()).unwrap();
+            serializer.write_arg(c_str);
+        }
+        // Writing NULL entry not necessary, the buffer is already zeroed
+
+        for var in self.envv {
+            let c_str = CStr::from_bytes_until_nul(var.as_bytes()).unwrap();
+            serializer.write_env(c_str);
+        }
+        // Writing NULL entry not necessary, the buffer is already zeroed
+
+        for var in self.auxv {
+            serializer.write_aux(&var);
+        }
+
+        (stack_base, len)
+    }
 }
 
 /// Serializer for [`StackLayoutBuilder`].
@@ -277,7 +323,6 @@ struct StackLayoutSerializer<'a> {
     offset_envv_data: usize,
     // Offset in bytes for writes
     offset_auxv_data: usize,
-    target_addr: usize,
 }
 
 impl<'a> StackLayoutSerializer<'a> {
@@ -291,7 +336,6 @@ impl<'a> StackLayoutSerializer<'a> {
     #[allow(clippy::too_many_arguments)]
     fn new(
         buffer: &'a mut [u8],
-        target_addr: usize,
         len_argv_entries: usize,
         len_envv_entries: usize,
         len_auxv_entries: usize,
@@ -322,7 +366,6 @@ impl<'a> StackLayoutSerializer<'a> {
             offset_argv_data,
             offset_envv_data,
             offset_auxv_data,
-            target_addr,
         }
     }
 
@@ -349,15 +392,14 @@ impl<'a> StackLayoutSerializer<'a> {
 
     /// Writes a null-terminated CStr into the structure, including the
     /// pointer and the actual data.
-    const fn _write_cstr(
+    fn _write_cstr(
         buffer: &mut [u8],
         str: &CStr,
         entry_offset: &mut usize,
         data_area_offset: &mut usize,
-        target_addr: usize,
     ) {
         // The address where this will be reachable from a user-perspective.
-        let data_addr = target_addr + *data_area_offset;
+        let data_addr = buffer.as_ptr() as *const _ as usize + *data_area_offset;
 
         // write entry
         {
@@ -387,7 +429,6 @@ impl<'a> StackLayoutSerializer<'a> {
             arg,
             &mut self.offset_argv,
             &mut self.offset_argv_data,
-            self.target_addr,
         );
         self.sanity_checks();
     }
@@ -399,7 +440,6 @@ impl<'a> StackLayoutSerializer<'a> {
             var,
             &mut self.offset_envv,
             &mut self.offset_envv_data,
-            self.target_addr,
         );
 
         self.sanity_checks();
@@ -418,7 +458,7 @@ impl<'a> StackLayoutSerializer<'a> {
     /// _auxv data area_.
     fn write_aux_refdata(&mut self, key: AuxVarType, data: &[u8], add_nul_byte: bool) {
         // The address where this will be reachable from a user-perspective.
-        let data_addr = self.target_addr + self.offset_auxv_data;
+        let data_addr = self.buffer.as_ptr() as *const _ as usize + self.offset_auxv_data;
         self.write_aux_immediate(key, data_addr);
 
         // write data
@@ -465,21 +505,21 @@ mod tests {
 
     #[test]
     fn test_builder() {
-        let builder = StackLayoutBuilder::new()
-            .add_argv("first arg")
-            .add_argv("second arg")
-            .add_envv("var1=foo")
-            .add_envv("var2=bar")
-            .add_auxv(AuxVar::EGid(1_1337))
-            .add_auxv(AuxVar::Gid(2_1337))
-            .add_auxv(AuxVar::Random([
-                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-            ]))
-            .add_auxv(AuxVar::Uid(3_1337))
-            .add_auxv(AuxVar::ExecFn(c"ExecFn as &CStr".into()))
-            .add_auxv(AuxVar::Platform("Platform as &str".into()))
-            .add_auxv(AuxVar::BasePlatform("Base Platform as &str".into()));
-        let layout = builder.build(None);
+        let mut builder = StackLayoutBuilder::new();
+        builder.add_argv("first arg");
+        builder.add_argv("second arg");
+        builder.add_envv("var1=foo");
+        builder.add_envv("var2=bar");
+        builder.add_auxv(AuxVar::EGid(1_1337));
+        builder.add_auxv(AuxVar::Gid(2_1337));
+        builder.add_auxv(AuxVar::Random([
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+        ]));
+        builder.add_auxv(AuxVar::Uid(3_1337));
+        builder.add_auxv(AuxVar::ExecFn(c"ExecFn as &CStr".into()));
+        builder.add_auxv(AuxVar::Platform("Platform as &str".into()));
+        builder.add_auxv(AuxVar::BasePlatform("Base Platform as &str".into()));
+        let layout = builder.build();
 
         // now parse the layout
         let layout = StackLayoutRef::new(layout.as_ref(), None);
