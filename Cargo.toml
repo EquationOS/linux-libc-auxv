@@ -9,9 +9,7 @@ decode or construct argc, argv, envp, and auxv (auxiliary vector).
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.85.0"
-authors = [
-    "Philipp Schuster <phip1611@gmail.com>"
-]
+authors = ["Philipp Schuster <phip1611@gmail.com>"]
 keywords = ["libc", "auxv", "linux", "auxiliary-vector", "crt0"]
 categories = ["os::linux-apis", "no-std"]
 readme = "README.md"
@@ -19,16 +17,14 @@ license = "MIT"
 homepage = "https://github.com/phip1611/linux-libc-auxv"
 repository = "https://github.com/phip1611/linux-libc-auxv"
 documentation = "https://docs.rs/linux-libc-auxv"
-exclude = [
-    ".github"
-]
+exclude = [".github"]
 
 [features]
-default = [ "alloc", "builder" ]
+default = ["alloc", "builder"]
 alloc = []
 builder = ["alloc", "dep:aligned-vec"]
 
 [dependencies]
 aligned-vec = { version = "0.6.4", default-features = false, optional = true }
-bitflags = "2.9.1"
+bitflags = "2.2"
 thiserror = { version = "2.0.12", default-features = false }
