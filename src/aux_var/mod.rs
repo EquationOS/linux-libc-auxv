@@ -260,7 +260,7 @@ impl<'a> AuxVar<'a> {
     /// # Safety
     /// This function creates undefined behavior or might even crash if the
     /// value is an invalid pointer or a pointer pointing to invalid memory.
-    pub(crate) unsafe fn from_raw(serialized: &AuxVarRaw, buffer: &'a [u8]) -> Self {
+    pub unsafe fn from_raw(serialized: &AuxVarRaw, buffer: &'a [u8]) -> Self {
         let key = serialized.key().unwrap();
 
         match key {
