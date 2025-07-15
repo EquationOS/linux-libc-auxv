@@ -261,7 +261,9 @@ impl<'a> StackLayoutBuilder<'a> {
         let (mut buffer, stack_base) = {
             // If a target address is given, we allocate the buffer with
             // the given alignment.
-            let stack_base = (stack_top - len) & !(align_of::<usize>() - 1);
+            // x86_64 calling convention: the stack must be 16-byte aligned before
+            // calling a function.
+            let stack_base = (stack_top - len) & !(align_of::<usize>() * 2 - 1);
             let stack_range = unsafe {
                 // Zeroed the buffer.
                 core::ptr::write_bytes(stack_base as *mut u8, 0, len);
